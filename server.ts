@@ -27,6 +27,7 @@ import {
   explainOpportunityWithGemini,
   improveResumeWithGemini,
 } from './server/agents/mentorAgent.ts';
+import { compareEvaluationAttempts } from './server/agents/evaluationEngine.ts';
 import {
   applyTransitionWorkflow,
   buildTwinSnapshot,
@@ -34,13 +35,16 @@ import {
   createProfileWorkflow,
   deleteApplicationWorkflow,
   ensureSeededDemoTwin,
+  evaluateProjectSubmissionWorkflow,
+  getEvaluationHistoryWorkflow,
+  getEvaluationLeaderboardWorkflow,
   getOpportunitiesOverviewWorkflow,
   loginUserWorkflow,
   mentorChatWorkflow,
   registerUserWorkflow,
   simulateTransitionWorkflow,
   startAssessmentWorkflow,
-  submitAssessmentWorkflow,
+  submitAssessmentWithAiWorkflow,
   updateProgressWorkflow,
   updateResumeProfileWorkflow,
   upsertApplicationWorkflow,
@@ -49,6 +53,7 @@ import { runProfileAgent } from './server/agents/profileAgent.ts';
 import { runSkillAnalyst } from './server/agents/skillAnalyst.ts';
 import {
   getCohortLearners,
+  getEvaluationAttemptById,
   getProfileById,
   getReplanDiffs,
   getRoadmapByProfileId,
@@ -476,14 +481,14 @@ function registerApiRoutes(router: express.Router): void {
     }
   });
 
-  router.post('/assessment/submit-problem', (req: Request, res: Response) => {
+  router.post('/assessment/submit-problem', async (req: Request, res: Response) => {
     try {
       const { profileId, assessmentId, quizAnswers, submittedCode, practicalAnswer } = req.body ?? {};
       if (!profileId || !assessmentId) {
         res.status(400).json({ error: 'profileId and assessmentId are required' });
         return;
       }
-      const result = submitAssessmentWorkflow({
+      const result = await submitAssessmentWithAiWorkflow({
         profileId: String(profileId),
         assessmentId: String(assessmentId),
         quizAnswers: Array.isArray(quizAnswers) ? quizAnswers.map(Number) : [],
@@ -493,6 +498,81 @@ function registerApiRoutes(router: express.Router): void {
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to evaluate assessment' });
+    }
+  });
+
+  router.post('/evaluations/submit', async (req: Request, res: Response) => {
+    try {
+      const { profileId, skillId, title, problemStatement, submittedCode, testNotes } = req.body ?? {};
+      if (!profileId || !skillId || !title || !problemStatement || !submittedCode) {
+        res.status(400).json({
+          error: 'profileId, skillId, title, problemStatement, and submittedCode are required',
+        });
+        return;
+      }
+      const result = await evaluateProjectSubmissionWorkflow({
+        profileId: String(profileId),
+        skillId: String(skillId),
+        title: String(title),
+        problemStatement: String(problemStatement),
+        submittedCode: String(submittedCode),
+        testNotes: typeof testNotes === 'string' ? testNotes : undefined,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Failed to evaluate project submission',
+      });
+    }
+  });
+
+  router.get('/evaluations/history/:profileId', (req: Request, res: Response) => {
+    try {
+      const profileId = String(req.params.profileId);
+      if (profileId === 'twin_demo_maya') ensureSeededDemoTwin();
+      if (!getProfileById(profileId)) {
+        res.status(404).json({ error: 'Profile not found' });
+        return;
+      }
+      res.json(getEvaluationHistoryWorkflow(profileId));
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Failed to load evaluation history',
+      });
+    }
+  });
+
+  router.get('/evaluations/compare', (req: Request, res: Response) => {
+    try {
+      const baselineId = String(req.query.baselineId ?? '');
+      const targetId = String(req.query.targetId ?? '');
+      if (!baselineId || !targetId) {
+        res.status(400).json({ error: 'baselineId and targetId query parameters are required' });
+        return;
+      }
+      const baseline = getEvaluationAttemptById(baselineId);
+      const target = getEvaluationAttemptById(targetId);
+      if (!baseline || !target) {
+        res.status(404).json({ error: 'One or both evaluation attempts were not found' });
+        return;
+      }
+      res.json(compareEvaluationAttempts(baseline, target));
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Failed to compare evaluation attempts',
+      });
+    }
+  });
+
+  router.get('/evaluations/leaderboard', (req: Request, res: Response) => {
+    try {
+      ensureSeededDemoTwin();
+      const profileId = req.query.profileId ? String(req.query.profileId) : undefined;
+      res.json(getEvaluationLeaderboardWorkflow(profileId));
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to load evaluation leaderboard',
+      });
     }
   });
 

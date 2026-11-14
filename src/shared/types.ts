@@ -397,6 +397,156 @@ export interface AssessmentStartResponse {
   aiMode: AIMode;
 }
 
+export type EvaluationCategoryKey =
+  | 'code_quality'
+  | 'security'
+  | 'efficiency'
+  | 'testing'
+  | 'accessibility'
+  | 'problem_alignment';
+
+export type PerformanceClassification =
+  | 'Exemplary'
+  | 'Proficient'
+  | 'Developing'
+  | 'Needs Attention';
+
+export interface ActionableCategoryFeedback {
+  didWell: string;
+  needsImprovement: string;
+  whyItMatters: string;
+  howToFix: string;
+  nextSteps: string[];
+  evidence: string[];
+  limitations?: string;
+}
+
+export interface EvaluationCategoryResult {
+  key: EvaluationCategoryKey;
+  label: string;
+  weightPct: number;
+  score: number; // 0-100
+  weightedContribution: number;
+  performanceLabel: PerformanceClassification;
+  applicable: boolean;
+  strengths: string[];
+  weaknesses: string[];
+  recommendations: string[];
+  feedback: ActionableCategoryFeedback;
+}
+
+export interface EvaluationCheckRecord {
+  name: string;
+  executed: boolean;
+  outcome: 'passed' | 'findings' | 'failed' | 'not_applicable' | 'not_executed';
+  detail: string;
+}
+
+export interface EvaluationReport {
+  attemptId: string;
+  profileId: string;
+  skillId: string;
+  skillName: string;
+  submissionType: 'assessment' | 'project_code';
+  submissionTitle: string;
+  attemptNumber: number;
+  timestamp: string;
+  overallScore: number; // Weighted 0-100 across the 6 criteria
+  performanceClassification: PerformanceClassification;
+  evaluationStatus:
+    | 'Verified & Complete'
+    | 'Evaluated (Partial Scope)'
+    | 'Needs Remediation';
+  aiMode: AIMode;
+  categories: EvaluationCategoryResult[];
+  checksExecuted: EvaluationCheckRecord[];
+  summaryNote: string;
+}
+
+export interface EvaluationAttemptRecord {
+  id: string;
+  profileId: string;
+  skillId: string;
+  skillName: string;
+  submissionType: 'assessment' | 'project_code';
+  submissionTitle: string;
+  attemptNumber: number;
+  overallScore: number;
+  performanceClassification: PerformanceClassification;
+  evaluationStatus: EvaluationReport['evaluationStatus'];
+  quizScore: number;
+  practicalScore: number;
+  combinedScore: number;
+  passed: boolean;
+  replanTriggered: boolean;
+  updatedSkillLevel: number;
+  aiMode: AIMode;
+  timestamp: string;
+  categories: EvaluationCategoryResult[];
+  checksExecuted: EvaluationCheckRecord[];
+  summaryNote: string;
+}
+
+export interface EvaluationAttemptComparison {
+  baselineAttempt: EvaluationAttemptRecord;
+  targetAttempt: EvaluationAttemptRecord;
+  overallDelta: number;
+  improvedCategories: Array<{
+    key: EvaluationCategoryKey;
+    label: string;
+    beforeScore: number;
+    afterScore: number;
+    delta: number;
+  }>;
+  decliningCategories: Array<{
+    key: EvaluationCategoryKey;
+    label: string;
+    beforeScore: number;
+    afterScore: number;
+    delta: number;
+  }>;
+  unchangedCategories: Array<{
+    key: EvaluationCategoryKey;
+    label: string;
+    score: number;
+  }>;
+}
+
+export interface EvaluationHistoryResponse {
+  profileId: string;
+  attempts: EvaluationAttemptRecord[];
+  totalAttempts: number;
+  bestAttempt: EvaluationAttemptRecord | null;
+  latestAttempt: EvaluationAttemptRecord | null;
+  averageScore: number;
+  improvementPct: number | null;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  profileId: string;
+  name: string;
+  targetRoleTitle: string;
+  domainName: string;
+  isCurrentUser: boolean;
+  attemptCount: number;
+  bestScore: number;
+  recentScore: number;
+  averageScore: number;
+  improvementPct: number | null;
+  bestAttemptClassification: PerformanceClassification;
+  bestAttemptTimestamp: string;
+  recentAttemptTimestamp: string;
+  categoryAverages: Record<EvaluationCategoryKey, number>;
+}
+
+export interface EvaluationLeaderboardResponse {
+  entries: LeaderboardEntry[];
+  totalEvaluatedLearners: number;
+  totalRecordedAttempts: number;
+  categoryLabels: Array<{ key: EvaluationCategoryKey; label: string; weightPct: number }>;
+}
+
 export interface AssessmentAttempt {
   id: string;
   profileId: string;
@@ -409,6 +559,10 @@ export interface AssessmentAttempt {
   replanTriggered: boolean;
   updatedSkillLevel: number;
   timestamp: string;
+  attemptNumber?: number;
+  overallScore?: number;
+  performanceClassification?: PerformanceClassification;
+  evaluationReport?: EvaluationReport;
 }
 
 export interface AssessmentSubmitResponse {
@@ -429,6 +583,7 @@ export interface AssessmentSubmitResponse {
   analysis: SkillAnalysis;
   roadmap: RoadmapStep[];
   progress: ProgressMetrics;
+  evaluationReport?: EvaluationReport;
 }
 
 export interface AgentToolExecution {

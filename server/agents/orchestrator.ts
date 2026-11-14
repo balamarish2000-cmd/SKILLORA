@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { buildVerifiedSearchChannels } from '../../src/shared/opportunitiesCatalog.ts';
-import { SAMPLE_RESUMES, SKILLS_CATALOG, TARGET_ROLES } from '../../src/shared/seedData.ts';
+import { CAREER_DOMAINS, SAMPLE_RESUMES, SKILLS_CATALOG, TARGET_ROLES } from '../../src/shared/seedData.ts';
 import type {
   AIMode,
   AgentTraceEvent,
@@ -12,7 +12,12 @@ import type {
   CareerTransitionRecord,
   CareerTransitionSimulation,
   EducationEntry,
+  EvaluationCategoryKey,
+  EvaluationHistoryResponse,
+  EvaluationLeaderboardResponse,
+  EvaluationReport,
   JobApplication,
+  LeaderboardEntry,
   LearnerProfile,
   LearningPlanMode,
   MentorMessage,
@@ -28,10 +33,13 @@ import type {
 import {
   createUserRecord,
   deleteApplicationById,
+  getAllEvaluationAttempts,
   getApplicationsByProfileId,
   getAssessmentHistoryByProfileId,
   getAssessmentRecord,
+  getEvaluationAttemptsByProfileId,
   getMentorMessages,
+  getNextAttemptNumber,
   getProfileById,
   getReplanDiffs,
   getRoadmapByProfileId,
@@ -40,6 +48,7 @@ import {
   insertTraceEvent,
   listProfiles,
   saveAssessmentRecord,
+  saveEvaluationReport,
   saveMentorMessage,
   saveProfile,
   saveReplanDiff,
@@ -51,6 +60,11 @@ import { getActiveAIMode } from '../gemini.ts';
 import { evaluateProblemSubmission, startSkillAssessment } from './assessorAgent.ts';
 import { runCareerMatcher } from './careerMatcher.ts';
 import { runCuratorAgent, simulateCareerTransition } from './curatorAgent.ts';
+import {
+  EVALUATION_CRITERIA,
+  runDeterministicEvaluationPipeline,
+  runFullEvaluationPipeline,
+} from './evaluationEngine.ts';
 import { type MentorToolbox, runMentorAgent } from './mentorAgent.ts';
 import { deterministicParseResume, runProfileAgent } from './profileAgent.ts';
 import { runProgressTracker } from './progressTracker.ts';
@@ -125,9 +139,196 @@ export function buildTwinSnapshot(profileId: string): TwinSnapshot | null {
   };
 }
 
+function seedBaselineEvaluationForProfile(
+  profileId: string,
+  skillId: string,
+  quizAnswers: number[],
+  codeOrPractical: { submittedCode?: string; practicalAnswer?: string },
+  timestamp: string
+): void {
+  const startPayload = startSkillAssessment(skillId);
+  saveAssessmentRecord(startPayload.assessmentId, profileId, skillId, startPayload);
+  const evalRes = evaluateProblemSubmission({
+    questions: startPayload.questions,
+    quizAnswers,
+    challenge: startPayload.challenge,
+    practicalTask: startPayload.practicalTask,
+    submittedCode: codeOrPractical.submittedCode,
+    practicalAnswer: codeOrPractical.practicalAnswer,
+  });
+  const attemptNumber = getNextAttemptNumber(profileId);
+  const submissionTitle =
+    startPayload.challenge?.title ?? startPayload.practicalTask?.title ?? `${startPayload.skillName} Assessment`;
+  const problemStatement =
+    startPayload.challenge?.description ??
+    startPayload.practicalTask?.scenarioPrompt ??
+    `Demonstrate applied competency in ${startPayload.skillName}.`;
+
+  const report = runDeterministicEvaluationPipeline({
+    attemptId: startPayload.assessmentId,
+    profileId,
+    skillId: startPayload.skillId,
+    skillName: startPayload.skillName,
+    submissionType: 'assessment',
+    submissionTitle,
+    attemptNumber,
+    timestamp,
+    problemStatement,
+    submittedCode: codeOrPractical.submittedCode,
+    practicalAnswer: codeOrPractical.practicalAnswer,
+    quizScore: evalRes.quizScore,
+    practicalScore: evalRes.practicalScore,
+    questions: startPayload.questions,
+    quizAnswers,
+    challenge: startPayload.challenge,
+    practicalTask: startPayload.practicalTask,
+    testResults: evalRes.testResults,
+    executionMs: evalRes.executionMs,
+  });
+
+  saveEvaluationReport({
+    report,
+    quizScore: evalRes.quizScore,
+    practicalScore: evalRes.practicalScore,
+    combinedScore: evalRes.combinedScore,
+    passed: evalRes.passed,
+    replanTriggered: evalRes.combinedScore < 50,
+    updatedSkillLevel: evalRes.combinedScore >= 80 ? 4 : evalRes.combinedScore >= 50 ? 3 : 1,
+  });
+
+  updateAssessmentResult(startPayload.assessmentId, {
+    assessmentId: startPayload.assessmentId,
+    profileId,
+    skillId: startPayload.skillId,
+    skillName: startPayload.skillName,
+    quizScore: evalRes.quizScore,
+    practicalScore: evalRes.practicalScore,
+    combinedScore: evalRes.combinedScore,
+    passed: evalRes.passed,
+    testResults: evalRes.testResults,
+    practicalFeedback: evalRes.practicalFeedback,
+    stdout: evalRes.stdout,
+    updatedSkillLevel: evalRes.combinedScore >= 80 ? 4 : evalRes.combinedScore >= 50 ? 3 : 1,
+    replanTriggered: evalRes.combinedScore < 50,
+    replanDiff: null,
+    evaluationReport: report,
+  });
+}
+
+function ensureDemoBaselineEvaluations(): void {
+  if (getEvaluationAttemptsByProfileId('twin_demo_maya').length === 0) {
+    const t1 = new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString();
+    const t2 = new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString();
+
+    // Attempt 1: Baseline javascript submission with nested lookup & missing edge guard
+    seedBaselineEvaluationForProfile(
+      'twin_demo_maya',
+      'javascript',
+      [1, 0],
+      {
+        submittedCode: `function findReadySkills(skills, completedIds) {
+  var out = [];
+  for (var i = 0; i < skills.length; i++) {
+    var s = skills[i];
+    if (!completedIds.includes(s.id)) {
+      out.push(s.id);
+    }
+  }
+  return out;
+}`,
+      },
+      t1
+    );
+
+    // Attempt 2: Improved submission using Set + input guard + all test cases passing
+    const jsAssess = startSkillAssessment('javascript');
+    const correctQuiz = jsAssess.questions.map((q) => q.correctIndex);
+    seedBaselineEvaluationForProfile(
+      'twin_demo_maya',
+      'javascript',
+      correctQuiz,
+      {
+        submittedCode: `function findReadySkills(skills, completedIds) {
+  if (!Array.isArray(skills) || !Array.isArray(completedIds)) return [];
+  const done = new Set(completedIds);
+  return skills
+    .filter((s) => !done.has(s.id) && s.prerequisites.every((p) => done.has(p)))
+    .map((s) => s.id)
+    .sort();
+}`,
+      },
+      t2
+    );
+  }
+
+  // Seed 2 realistic peer profiles & genuinely computed baseline evaluations if leaderboard has < 2 learners
+  const peers = [
+    {
+      id: 'twin_peer_vikram',
+      sample: SAMPLE_RESUMES[1],
+      skillId: 'engineering_mechanics',
+      practicalAnswer: '1000',
+      hoursAgo: 30,
+    },
+    {
+      id: 'twin_peer_sofia',
+      sample: SAMPLE_RESUMES[2],
+      skillId: 'pharmacology',
+      practicalAnswer: '25',
+      hoursAgo: 20,
+    },
+  ];
+
+  for (const peer of peers) {
+    if (!peer.sample) continue;
+    if (!getProfileById(peer.id)) {
+      const parsed = deterministicParseResume(peer.sample.resumeText);
+      const now = new Date().toISOString();
+      saveProfile({
+        id: peer.id,
+        name: peer.sample.name,
+        email: peer.sample.email,
+        currentTitle: peer.sample.currentTitle,
+        currentDomainId: peer.sample.domainId,
+        currentRoleId: peer.sample.currentRoleId,
+        specialization: 'Applied Practice',
+        preferredLocation: 'Bengaluru, India',
+        careerInterests: [],
+        experienceYears: peer.sample.experienceYears,
+        education: parsed.education,
+        targetRoleId: peer.sample.defaultTargetRole,
+        learningPlan: 'balanced',
+        weeklyHours: peer.sample.weeklyHours,
+        expectedAnnualSalaryInr: 1400000,
+        minimumExpectedSalaryInr: 900000,
+        rawResumeText: peer.sample.resumeText,
+        skills: parsed.skills,
+        certifications: parsed.certifications,
+        projects: parsed.projects,
+        transitionHistory: [],
+        aiMode: getActiveAIMode(),
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    if (getEvaluationAttemptsByProfileId(peer.id).length === 0) {
+      const start = startSkillAssessment(peer.skillId);
+      const answers = start.questions.map((q) => q.correctIndex);
+      seedBaselineEvaluationForProfile(
+        peer.id,
+        peer.skillId,
+        answers,
+        { practicalAnswer: peer.practicalAnswer },
+        new Date(Date.now() - 1000 * 60 * 60 * peer.hoursAgo).toISOString()
+      );
+    }
+  }
+}
+
 export function ensureSeededDemoTwin(): TwinSnapshot {
   const existing = getProfileById('twin_demo_maya');
   if (existing) {
+    ensureDemoBaselineEvaluations();
     return buildTwinSnapshot('twin_demo_maya')!;
   }
 
@@ -236,6 +437,8 @@ export function ensureSeededDemoTwin(): TwinSnapshot {
     performance.now() - t3,
     profile.aiMode
   );
+
+  ensureDemoBaselineEvaluations();
 
   return buildTwinSnapshot(profile.id)!;
 }
@@ -808,13 +1011,44 @@ export function submitAssessmentWorkflow(input: {
     practicalAnswer,
   });
 
+  const attemptNumber = getNextAttemptNumber(profileId);
+  const submissionTitle =
+    startPayload.challenge?.title ??
+    startPayload.practicalTask?.title ??
+    `${startPayload.skillName} Assessment`;
+  const problemStatement =
+    startPayload.challenge?.description ??
+    startPayload.practicalTask?.scenarioPrompt ??
+    `Demonstrate applied competency in ${startPayload.skillName}.`;
+
+  const evaluationReport = runDeterministicEvaluationPipeline({
+    attemptId: assessmentId,
+    profileId,
+    skillId: startPayload.skillId,
+    skillName: startPayload.skillName,
+    submissionType: 'assessment',
+    submissionTitle,
+    attemptNumber,
+    problemStatement,
+    submittedCode,
+    practicalAnswer,
+    quizScore: evalRes.quizScore,
+    practicalScore: evalRes.practicalScore,
+    questions: startPayload.questions,
+    quizAnswers,
+    challenge: startPayload.challenge,
+    practicalTask: startPayload.practicalTask,
+    testResults: evalRes.testResults,
+    executionMs: evalRes.executionMs,
+  });
+
   logTrace(
     profileId,
     corr,
     'Assessor',
     'evaluate_domain_submission',
     `${startPayload.skillName} (${startPayload.assessmentType})`,
-    `Quiz ${evalRes.quizScore}%, Practical ${evalRes.practicalScore}%, Combined ${evalRes.combinedScore}%`,
+    `Quiz ${evalRes.quizScore}%, Practical ${evalRes.practicalScore}%, Combined ${evalRes.combinedScore}%, Weighted 6-Criteria ${evaluationReport.overallScore}/100 (${evaluationReport.performanceClassification})`,
     performance.now() - tEval,
     mode,
     evalRes.combinedScore < 50 ? 'replan_triggered' : 'ok'
@@ -925,6 +1159,16 @@ export function submitAssessmentWorkflow(input: {
     );
   }
 
+  saveEvaluationReport({
+    report: evaluationReport,
+    quizScore: evalRes.quizScore,
+    practicalScore: evalRes.practicalScore,
+    combinedScore: evalRes.combinedScore,
+    passed: evalRes.passed,
+    replanTriggered,
+    updatedSkillLevel: newLevel,
+  });
+
   const progress = runProgressTracker(updatedProfile, roadmap);
   const response: AssessmentSubmitResponse = {
     assessmentId,
@@ -944,10 +1188,312 @@ export function submitAssessmentWorkflow(input: {
     analysis,
     roadmap,
     progress,
+    evaluationReport,
   };
 
   updateAssessmentResult(assessmentId, response);
   return response;
+}
+
+export async function submitAssessmentWithAiWorkflow(input: {
+  profileId: string;
+  assessmentId: string;
+  quizAnswers: number[];
+  submittedCode?: string;
+  practicalAnswer?: string;
+}): Promise<AssessmentSubmitResponse> {
+  const response = submitAssessmentWorkflow(input);
+  if (getActiveAIMode() !== 'gemini' || !response.evaluationReport) {
+    return response;
+  }
+
+  const record = getAssessmentRecord(input.assessmentId);
+  const startPayload = record?.payload as AssessmentStartResponse | undefined;
+  const problemStatement =
+    startPayload?.challenge?.description ??
+    startPayload?.practicalTask?.scenarioPrompt ??
+    `Demonstrate applied competency in ${response.skillName}.`;
+
+  const enrichedReport = await runFullEvaluationPipeline(
+    {
+      attemptId: response.assessmentId,
+      profileId: response.profileId,
+      skillId: response.skillId,
+      skillName: response.skillName,
+      submissionType: 'assessment',
+      submissionTitle: response.evaluationReport.submissionTitle,
+      attemptNumber: response.evaluationReport.attemptNumber,
+      timestamp: response.evaluationReport.timestamp,
+      problemStatement,
+      submittedCode: input.submittedCode,
+      practicalAnswer: input.practicalAnswer,
+      quizScore: response.quizScore,
+      practicalScore: response.practicalScore,
+      questions: startPayload?.questions,
+      quizAnswers: input.quizAnswers,
+      challenge: startPayload?.challenge,
+      practicalTask: startPayload?.practicalTask,
+      testResults: response.testResults,
+    },
+    { useAi: true }
+  );
+
+  saveEvaluationReport({
+    report: enrichedReport,
+    quizScore: response.quizScore,
+    practicalScore: response.practicalScore,
+    combinedScore: response.combinedScore,
+    passed: response.passed,
+    replanTriggered: response.replanTriggered,
+    updatedSkillLevel: response.updatedSkillLevel,
+  });
+
+  const enrichedResponse: AssessmentSubmitResponse = {
+    ...response,
+    evaluationReport: enrichedReport,
+  };
+  updateAssessmentResult(input.assessmentId, enrichedResponse);
+  return enrichedResponse;
+}
+
+export async function evaluateProjectSubmissionWorkflow(input: {
+  profileId: string;
+  skillId: string;
+  title: string;
+  problemStatement: string;
+  submittedCode: string;
+  testNotes?: string;
+}): Promise<{ report: EvaluationReport; twin: TwinSnapshot }> {
+  const profile = getProfileById(input.profileId);
+  if (!profile) throw new Error(`Profile ${input.profileId} not found`);
+
+  const code = input.submittedCode.trim();
+  const title = input.title.trim();
+  const problemStatement = input.problemStatement.trim();
+  if (!code || !title || !problemStatement) {
+    throw new Error('Submission title, problem statement, and code are required.');
+  }
+
+  const skillDef = SKILLS_CATALOG.find((s) => s.id === input.skillId);
+  const skillName = skillDef?.name ?? input.skillId;
+  const attemptId = `eval_proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const attemptNumber = getNextAttemptNumber(input.profileId);
+  const corr = `corr_proj_eval_${Date.now()}`;
+  const t0 = performance.now();
+
+  const report = await runFullEvaluationPipeline(
+    {
+      attemptId,
+      profileId: input.profileId,
+      skillId: input.skillId,
+      skillName,
+      submissionType: 'project_code',
+      submissionTitle: title,
+      attemptNumber,
+      problemStatement,
+      submittedCode: code,
+      testNotes: input.testNotes,
+      quizScore: 0,
+      practicalScore: 0,
+    },
+    { useAi: true }
+  );
+
+  const passed = report.overallScore >= 50;
+  const currentEntry = profile.skills.find((s) => s.skillId === input.skillId);
+  const currentLevel = currentEntry?.level ?? 0;
+  const updatedSkillLevel =
+    report.overallScore >= 85
+      ? Math.max(currentLevel, 4)
+      : report.overallScore >= 70
+        ? Math.max(currentLevel, 3)
+        : currentLevel;
+
+  saveEvaluationReport({
+    report,
+    quizScore: report.overallScore,
+    practicalScore: report.overallScore,
+    combinedScore: Math.round(report.overallScore),
+    passed,
+    replanTriggered: report.overallScore < 50,
+    updatedSkillLevel,
+  });
+
+  if (updatedSkillLevel > currentLevel) {
+    const updatedSkills = currentEntry
+      ? profile.skills.map((s) =>
+          s.skillId === input.skillId
+            ? {
+                ...s,
+                level: updatedSkillLevel,
+                confidence: Math.max(s.confidence, 0.85),
+                source: 'project_evidence' as const,
+                evidence: `Project evaluation '${title}' (${report.overallScore}/100)`,
+              }
+            : s
+        )
+      : [
+          ...profile.skills,
+          {
+            skillId: input.skillId,
+            skillName,
+            level: updatedSkillLevel,
+            confidence: 0.85,
+            source: 'project_evidence' as const,
+            evidence: `Project evaluation '${title}' (${report.overallScore}/100)`,
+          },
+        ];
+    saveProfile({
+      ...profile,
+      skills: updatedSkills,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  logTrace(
+    input.profileId,
+    corr,
+    'Assessor',
+    'evaluate_project_code',
+    `${title} (${skillName})`,
+    `Overall ${report.overallScore}/100 (${report.performanceClassification}) across 6 criteria`,
+    performance.now() - t0,
+    report.aiMode,
+    report.overallScore < 50 ? 'replan_triggered' : 'ok'
+  );
+
+  return {
+    report,
+    twin: buildTwinSnapshot(input.profileId)!,
+  };
+}
+
+export function getEvaluationHistoryWorkflow(profileId: string): EvaluationHistoryResponse {
+  const attempts = getEvaluationAttemptsByProfileId(profileId);
+  const totalAttempts = attempts.length;
+  const bestAttempt =
+    attempts.length > 0
+      ? attempts.reduce((best, cur) => (cur.overallScore > best.overallScore ? cur : best), attempts[0])
+      : null;
+  const latestAttempt = attempts[0] ?? null;
+  const averageScore =
+    attempts.length > 0
+      ? Math.round((attempts.reduce((s, a) => s + a.overallScore, 0) / attempts.length) * 10) / 10
+      : 0;
+
+  let improvementPct: number | null = null;
+  if (attempts.length >= 2) {
+    const earliest = attempts[attempts.length - 1];
+    const latest = attempts[0];
+    improvementPct = Math.round((latest.overallScore - earliest.overallScore) * 10) / 10;
+  }
+
+  return {
+    profileId,
+    attempts,
+    totalAttempts,
+    bestAttempt,
+    latestAttempt,
+    averageScore,
+    improvementPct,
+  };
+}
+
+export function getEvaluationLeaderboardWorkflow(
+  currentProfileId?: string
+): EvaluationLeaderboardResponse {
+  const allAttempts = getAllEvaluationAttempts();
+  const profiles = listProfiles();
+  const profileMap = new Map(profiles.map((p) => [p.id, p]));
+  const roleMap = new Map(TARGET_ROLES.map((r) => [r.id, r]));
+  const domainMap = new Map(CAREER_DOMAINS.map((d) => [d.id, d.name]));
+
+  const byProfile = new Map<string, typeof allAttempts>();
+  for (const att of allAttempts) {
+    const arr = byProfile.get(att.profileId) ?? [];
+    arr.push(att);
+    byProfile.set(att.profileId, arr);
+  }
+
+  const rawEntries: Array<Omit<LeaderboardEntry, 'rank'>> = [];
+
+  for (const [profileId, attempts] of byProfile.entries()) {
+    const profile = profileMap.get(profileId);
+    if (!profile || attempts.length === 0) continue;
+
+    // Sort newest first by attemptNumber / timestamp
+    const orderedDesc = [...attempts].sort(
+      (a, b) => b.attemptNumber - a.attemptNumber || b.timestamp.localeCompare(a.timestamp)
+    );
+    const recent = orderedDesc[0];
+    const earliest = orderedDesc[orderedDesc.length - 1];
+    const best = orderedDesc.reduce(
+      (acc, cur) => (cur.overallScore > acc.overallScore ? cur : acc),
+      orderedDesc[0]
+    );
+
+    const avgScore =
+      Math.round((orderedDesc.reduce((s, a) => s + a.overallScore, 0) / orderedDesc.length) * 10) / 10;
+    const improvementPct =
+      orderedDesc.length >= 2
+        ? Math.round((recent.overallScore - earliest.overallScore) * 10) / 10
+        : null;
+
+    const categoryAverages = {} as Record<EvaluationCategoryKey, number>;
+    for (const crit of EVALUATION_CRITERIA) {
+      const vals = orderedDesc
+        .map((a) => a.categories.find((c) => c.key === crit.key)?.score)
+        .filter((v): v is number => typeof v === 'number');
+      categoryAverages[crit.key] =
+        vals.length > 0
+          ? Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10
+          : 0;
+    }
+
+    const role = roleMap.get(profile.targetRoleId);
+    const domainName =
+      domainMap.get(role?.domainId ?? profile.currentDomainId) ?? 'Information Technology';
+
+    rawEntries.push({
+      profileId,
+      name: profile.name,
+      targetRoleTitle: role?.title ?? profile.targetRoleId,
+      domainName,
+      isCurrentUser: Boolean(currentProfileId && profileId === currentProfileId),
+      attemptCount: orderedDesc.length,
+      bestScore: best.overallScore,
+      recentScore: recent.overallScore,
+      averageScore: avgScore,
+      improvementPct,
+      bestAttemptClassification: best.performanceClassification,
+      bestAttemptTimestamp: best.timestamp,
+      recentAttemptTimestamp: recent.timestamp,
+      categoryAverages,
+    });
+  }
+
+  rawEntries.sort(
+    (a, b) =>
+      b.bestScore - a.bestScore ||
+      b.averageScore - a.averageScore ||
+      b.recentScore - a.recentScore
+  );
+
+  const entries: LeaderboardEntry[] = rawEntries.map((entry, idx) => ({
+    ...entry,
+    rank: idx + 1,
+  }));
+
+  return {
+    entries,
+    totalEvaluatedLearners: entries.length,
+    totalRecordedAttempts: allAttempts.length,
+    categoryLabels: EVALUATION_CRITERIA.map((c) => ({
+      key: c.key,
+      label: c.label,
+      weightPct: c.weightPct,
+    })),
+  };
 }
 
 export async function mentorChatWorkflow(

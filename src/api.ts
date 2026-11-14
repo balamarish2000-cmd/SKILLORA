@@ -9,6 +9,10 @@ import type {
   CareerTransitionSimulation,
   CohortOverview,
   EducationEntry,
+  EvaluationAttemptComparison,
+  EvaluationHistoryResponse,
+  EvaluationLeaderboardResponse,
+  EvaluationReport,
   JobApplication,
   LearningPlanMode,
   LearningResource,
@@ -205,6 +209,30 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  evaluateProjectSubmission: (payload: {
+    profileId: string;
+    skillId: string;
+    title: string;
+    problemStatement: string;
+    submittedCode: string;
+    testNotes?: string;
+  }) =>
+    requestJson<{ report: EvaluationReport; twin: TwinSnapshot }>('/api/evaluations/submit', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getEvaluationHistory: (profileId: string) =>
+    requestJson<EvaluationHistoryResponse>(`/api/evaluations/history/${encodeURIComponent(profileId)}`),
+  compareEvaluationAttempts: (baselineId: string, targetId: string) =>
+    requestJson<EvaluationAttemptComparison>(
+      `/api/evaluations/compare?baselineId=${encodeURIComponent(baselineId)}&targetId=${encodeURIComponent(targetId)}`
+    ),
+  getEvaluationLeaderboard: (profileId?: string) =>
+    requestJson<EvaluationLeaderboardResponse>(
+      profileId
+        ? `/api/evaluations/leaderboard?profileId=${encodeURIComponent(profileId)}`
+        : '/api/evaluations/leaderboard'
+    ),
   sendMentorMessage: (payload: { profileId: string; message: string }) =>
     requestJson<{ message: MentorMessage; twin: TwinSnapshot }>('/api/mentor', {
       method: 'POST',

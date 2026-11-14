@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { api, type CatalogResponse } from './api';
 import { AssessmentView } from './components/AssessmentView';
+import { AttemptScoreModal } from './components/AttemptScoreModal';
 import { CareerExplorerView } from './components/CareerExplorerView';
 import { CohortAdminView } from './components/CohortAdminView';
 import { DashboardView } from './components/DashboardView';
@@ -38,6 +39,7 @@ import { TransitionSimulatorView } from './components/TransitionSimulatorView';
 import type {
   AuthUser,
   CareerDomainId,
+  EvaluationReport,
   LearningPlanMode,
   RoadmapStepStatus,
   RoleId,
@@ -123,6 +125,7 @@ export default function App() {
   const [onboardingTab, setOnboardingTab] = useState<OnboardingTab>('resume_builder');
   const [onboardingAuthMode, setOnboardingAuthMode] = useState<'register' | 'login'>('register');
   const [diffModalOpen, setDiffModalOpen] = useState(false);
+  const [inspectedReport, setInspectedReport] = useState<EvaluationReport | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -518,6 +521,7 @@ export default function App() {
               twin={twin}
               domains={catalog.domains}
               onStartAssessmentForSkill={handleStartAssessmentForSkill}
+              onInspectEvaluation={(report) => setInspectedReport(report)}
               onOpenRoadmap={() => handleNavigate('roadmap')}
               onOpenMentor={() => handleNavigate('mentor')}
               onOpenOpportunities={() => handleNavigate('opportunities')}
@@ -585,6 +589,7 @@ export default function App() {
               onAssessmentCompleted={() => {
                 void refreshTwin(twin.profile.id);
               }}
+              onTwinUpdated={(nextTwin) => setTwin(nextTwin)}
               onOpenReplanDiff={() => setDiffModalOpen(true)}
             />
           )}
@@ -627,6 +632,13 @@ export default function App() {
         diff={twin?.latestDiff ?? null}
         open={diffModalOpen}
         onClose={() => setDiffModalOpen(false)}
+      />
+
+      <AttemptScoreModal
+        report={inspectedReport}
+        open={inspectedReport !== null}
+        onClose={() => setInspectedReport(null)}
+        canComparePrevious={false}
       />
     </div>
   );

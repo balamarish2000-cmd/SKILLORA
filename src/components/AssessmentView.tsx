@@ -1,15 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Code2,
   FlaskConical,
   GitBranch,
   HelpCircle,
+  History,
   Loader2,
   Play,
   RotateCcw,
   ShieldAlert,
+  Trophy,
   XCircle,
 } from 'lucide-react';
 import { api } from '../api';
@@ -17,9 +20,18 @@ import type {
   AssessmentStartResponse,
   AssessmentSubmitResponse,
   CareerDomain,
+  EvaluationReport,
   SkillDefinition,
   TwinSnapshot,
 } from '../shared/types';
+import { AttemptScoreModal } from './AttemptScoreModal';
+import {
+  AttemptHistoryComparePanel,
+  EvaluationLeaderboardPanel,
+  ProjectCodeEvaluatorPanel,
+} from './EvaluationAnalyticsPanels';
+
+type EvaluationTab = 'lab' | 'project' | 'history' | 'leaderboard';
 
 interface AssessmentViewProps {
   twin: TwinSnapshot;
@@ -27,6 +39,7 @@ interface AssessmentViewProps {
   skillsCatalog: SkillDefinition[];
   initialSkillId?: string;
   onAssessmentCompleted: (res: AssessmentSubmitResponse) => void;
+  onTwinUpdated?: (nextTwin: TwinSnapshot) => void;
   onOpenReplanDiff: () => void;
 }
 
@@ -76,11 +89,13 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
   skillsCatalog,
   initialSkillId,
   onAssessmentCompleted,
+  onTwinUpdated,
   onOpenReplanDiff,
 }) => {
   const defaultSkill =
     initialSkillId || twin.analysis.gaps[0]?.skillId || 'javascript';
 
+  const [activeTab, setActiveTab] = useState<EvaluationTab>('lab');
   const [selectedSkillId, setSelectedSkillId] = useState(defaultSkill);
   const [session, setSession] = useState<AssessmentStartResponse | null>(null);
   const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
@@ -92,6 +107,11 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<AssessmentSubmitResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [modalReport, setModalReport] = useState<EvaluationReport | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [refreshSignal, setRefreshSignal] = useState(0);
+  const [compareTargetId, setCompareTargetId] = useState<string | null>(null);
 
   const loadAssessment = async (skillId: string) => {
     setError(null);
@@ -175,6 +195,11 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
         practicalAnswer: session.practicalTask ? practicalAnswer : undefined,
       });
       setResult(res);
+      setRefreshSignal((n) => n + 1);
+      if (res.evaluationReport) {
+        setModalReport(res.evaluationReport);
+        setModalOpen(true);
+      }
       onAssessmentCompleted(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Submission failed');
@@ -202,50 +227,121 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <div className="text-xs text-pp-text-muted">
-            Assessor Agent · {session ? `${session.domainName} · ` : ''}Conceptual Quiz + Applied Verification
+            Assessor Agent · {session ? `${session.domainName} · ` : ''}Weighted 6-Criteria Evaluation Engine
           </div>
           <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-pp-text">
-            Domain Assessment &amp; Problem-Solving Lab
+            Evaluation, Scoring &amp; Assessment Studio
           </h1>
         </div>
 
-        <div className="flex items-center gap-3">
-          <label htmlFor="assess-skill-select" className="text-xs font-medium text-pp-text-muted whitespace-nowrap">
-            Target Skill:
-          </label>
-          <select
-            id="assess-skill-select"
-            value={selectedSkillId}
-            onChange={(e) => handleSkillChange(e.target.value)}
-            className="rounded-lg border border-pp-border bg-pp-card px-3 py-2 text-sm text-pp-text focus:border-pp-accent focus:outline-none max-w-xs"
-          >
-            {groupedSkills.gapSkills.length > 0 && (
-              <optgroup label="Your Current Priority Gaps">
-                {groupedSkills.gapSkills.map((s) => (
-                  <option key={`gap_${s.id}`} value={s.id}>
-                    {s.name} (Priority Gap)
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {groupedSkills.byDomain.map(({ domain, skills }) => (
-              <optgroup key={domain.id} label={domain.name}>
-                {skills.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        </div>
+        {activeTab === 'lab' && (
+          <div className="flex items-center gap-3">
+            <label htmlFor="assess-skill-select" className="text-xs font-medium text-pp-text-muted whitespace-nowrap">
+              Target Skill:
+            </label>
+            <select
+              id="assess-skill-select"
+              value={selectedSkillId}
+              onChange={(e) => handleSkillChange(e.target.value)}
+              className="rounded-lg border border-pp-border bg-pp-card px-3 py-2 text-sm text-pp-text focus:border-pp-accent focus:outline-none max-w-xs"
+            >
+              {groupedSkills.gapSkills.length > 0 && (
+                <optgroup label="Your Current Priority Gaps">
+                  {groupedSkills.gapSkills.map((s) => (
+                    <option key={`gap_${s.id}`} value={s.id}>
+                      {s.name} (Priority Gap)
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {groupedSkills.byDomain.map(({ domain, skills }) => (
+                <optgroup key={domain.id} label={domain.name}>
+                  {skills.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      {error && (
-        <div role="alert" className="bg-pp-error-soft border border-pp-error/40 text-pp-error rounded-xl px-4 py-3 text-sm">
-          {error}
-        </div>
+      {/* Section Navigation Tabs */}
+      <div
+        role="tablist"
+        aria-label="Evaluation Studio sections"
+        className="flex flex-wrap items-center gap-2 border-b border-pp-border pb-3"
+      >
+        {[
+          { id: 'lab' as const, label: 'Assessment Lab', icon: FlaskConical },
+          { id: 'project' as const, label: 'Project & Code Evaluator', icon: Code2 },
+          { id: 'history' as const, label: 'Attempt History & Compare', icon: History },
+          { id: 'leaderboard' as const, label: 'Performance & Leaderboard', icon: Trophy },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setActiveTab(tab.id)}
+              className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                active
+                  ? 'bg-pp-accent text-white'
+                  : 'bg-pp-surface text-pp-text-muted hover:text-pp-text hover:bg-pp-elevated border border-pp-border'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === 'project' && (
+        <ProjectCodeEvaluatorPanel
+          profileId={twin.profile.id}
+          skillsCatalog={skillsCatalog}
+          defaultSkillId={selectedSkillId}
+          onEvaluated={(report, nextTwin) => {
+            setRefreshSignal((n) => n + 1);
+            setModalReport(report);
+            setModalOpen(true);
+            onTwinUpdated?.(nextTwin);
+          }}
+        />
       )}
+
+      {activeTab === 'history' && (
+        <AttemptHistoryComparePanel
+          profileId={twin.profile.id}
+          refreshSignal={refreshSignal}
+          initialCompareTargetId={compareTargetId}
+          onInspectReport={(report) => {
+            setModalReport(report);
+            setModalOpen(true);
+          }}
+        />
+      )}
+
+      {activeTab === 'leaderboard' && (
+        <EvaluationLeaderboardPanel
+          profileId={twin.profile.id}
+          refreshSignal={refreshSignal}
+        />
+      )}
+
+      {activeTab === 'lab' && (
+        <>
+          {error && (
+            <div role="alert" className="bg-pp-error-soft border border-pp-error/40 text-pp-error rounded-xl px-4 py-3 text-sm">
+              {error}
+            </div>
+          )}
 
       {/* Mandatory Medical & Healthcare Safety Disclaimer */}
       {session?.safetyDisclaimer && (
@@ -293,18 +389,36 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
               </div>
             </div>
 
-            {result.replanTriggered && result.replanDiff && (
-              <button
-                type="button"
-                onClick={onOpenReplanDiff}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-pp-error hover:opacity-90 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <GitBranch className="w-4 h-4" />
-                <span>
-                  Inspect Replan Diff (+{result.replanDiff.added.length} added · {result.replanDiff.reordered.length} updated)
-                </span>
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {result.evaluationReport && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalReport(result.evaluationReport!);
+                    setModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-pp-accent hover:bg-pp-accent-hover rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  <span>
+                    Score Breakdown: {result.evaluationReport.overallScore}/100 ({result.evaluationReport.performanceClassification})
+                  </span>
+                </button>
+              )}
+
+              {result.replanTriggered && result.replanDiff && (
+                <button
+                  type="button"
+                  onClick={onOpenReplanDiff}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-pp-error hover:opacity-90 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <GitBranch className="w-4 h-4" />
+                  <span>
+                    Inspect Replan Diff (+{result.replanDiff.added.length} added · {result.replanDiff.reordered.length} updated)
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Per-Test Case / Applied Evaluation Results */}
@@ -591,6 +705,19 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
           </div>
         </div>
       )}
+        </>
+      )}
+
+      <AttemptScoreModal
+        report={modalReport}
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        canComparePrevious={(twin.assessmentHistory?.length ?? 0) >= 2}
+        onCompareWithPrevious={(attemptId) => {
+          setCompareTargetId(attemptId);
+          setActiveTab('history');
+        }}
+      />
     </div>
   );
 };

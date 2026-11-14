@@ -3,17 +3,25 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { generateCohortLearners } from '../src/shared/seedData.ts';
 import type {
+  AIMode,
+  ActionableCategoryFeedback,
   AgentTraceEvent,
   ApplicationStatus,
   AssessmentAttempt,
   AssessmentSubmitResponse,
   CareerDomainId,
   CohortLearner,
+  EvaluationAttemptRecord,
+  EvaluationCategoryKey,
+  EvaluationCategoryResult,
+  EvaluationCheckRecord,
+  EvaluationReport,
   JobApplication,
   LearnerProfile,
   LearningPlanMode,
   MentorMessage,
   OpportunityType,
+  PerformanceClassification,
   ReplanDiff,
   RoadmapStep,
 } from '../src/shared/types.ts';
@@ -153,6 +161,51 @@ export function getDb(): DatabaseSync {
       updated_at TEXT NOT NULL,
       UNIQUE(profile_id, opportunity_id)
     );
+
+    CREATE TABLE IF NOT EXISTS evaluation_attempts (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      skill_name TEXT NOT NULL,
+      submission_type TEXT NOT NULL,
+      submission_title TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      overall_score REAL NOT NULL,
+      performance_classification TEXT NOT NULL,
+      evaluation_status TEXT NOT NULL,
+      quiz_score REAL NOT NULL,
+      practical_score REAL NOT NULL,
+      combined_score REAL NOT NULL,
+      passed INTEGER NOT NULL,
+      replan_triggered INTEGER NOT NULL,
+      updated_skill_level REAL NOT NULL,
+      ai_mode TEXT NOT NULL,
+      checks_executed_json TEXT NOT NULL DEFAULT '[]',
+      summary_note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS evaluation_category_scores (
+      id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      category_key TEXT NOT NULL,
+      category_label TEXT NOT NULL,
+      weight_pct REAL NOT NULL,
+      score REAL NOT NULL,
+      weighted_contribution REAL NOT NULL,
+      performance_label TEXT NOT NULL,
+      applicable INTEGER NOT NULL DEFAULT 1,
+      strengths_json TEXT NOT NULL,
+      weaknesses_json TEXT NOT NULL,
+      recommendations_json TEXT NOT NULL,
+      feedback_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_eval_attempts_profile ON evaluation_attempts(profile_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_eval_cat_attempt ON evaluation_category_scores(attempt_id);
   `);
 
   ensureTableColumns(db, 'profiles', [
@@ -430,8 +483,213 @@ export function updateAssessmentResult(id: string, result: unknown): void {
   db.prepare('UPDATE assessments SET result_json = ? WHERE id = ?').run(JSON.stringify(result), id);
 }
 
+export function getNextAttemptNumber(profileId: string): number {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT COALESCE(MAX(attempt_number), 0) as max_num FROM evaluation_attempts WHERE profile_id = ?')
+    .get(profileId) as { max_num: number } | undefined;
+  return Number(row?.max_num ?? 0) + 1;
+}
+
+export function saveEvaluationReport(params: {
+  report: EvaluationReport;
+  quizScore: number;
+  practicalScore: number;
+  combinedScore: number;
+  passed: boolean;
+  replanTriggered: boolean;
+  updatedSkillLevel: number;
+}): void {
+  const db = getDb();
+  const { report } = params;
+
+  db.prepare(`
+    INSERT INTO evaluation_attempts (
+      id, profile_id, skill_id, skill_name, submission_type, submission_title,
+      attempt_number, overall_score, performance_classification, evaluation_status,
+      quiz_score, practical_score, combined_score, passed, replan_triggered,
+      updated_skill_level, ai_mode, checks_executed_json, summary_note, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      overall_score = excluded.overall_score,
+      performance_classification = excluded.performance_classification,
+      evaluation_status = excluded.evaluation_status,
+      ai_mode = excluded.ai_mode,
+      checks_executed_json = excluded.checks_executed_json,
+      summary_note = excluded.summary_note
+  `).run(
+    report.attemptId,
+    report.profileId,
+    report.skillId,
+    report.skillName,
+    report.submissionType,
+    report.submissionTitle,
+    report.attemptNumber,
+    report.overallScore,
+    report.performanceClassification,
+    report.evaluationStatus,
+    params.quizScore,
+    params.practicalScore,
+    params.combinedScore,
+    params.passed ? 1 : 0,
+    params.replanTriggered ? 1 : 0,
+    params.updatedSkillLevel,
+    report.aiMode,
+    JSON.stringify(report.checksExecuted),
+    report.summaryNote,
+    report.timestamp
+  );
+
+  db.prepare('DELETE FROM evaluation_category_scores WHERE attempt_id = ?').run(report.attemptId);
+
+  const insertCat = db.prepare(`
+    INSERT INTO evaluation_category_scores (
+      id, attempt_id, profile_id, category_key, category_label, weight_pct, score,
+      weighted_contribution, performance_label, applicable, strengths_json,
+      weaknesses_json, recommendations_json, feedback_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const cat of report.categories) {
+    insertCat.run(
+      `cat_${report.attemptId}_${cat.key}`,
+      report.attemptId,
+      report.profileId,
+      cat.key,
+      cat.label,
+      cat.weightPct,
+      cat.score,
+      cat.weightedContribution,
+      cat.performanceLabel,
+      cat.applicable ? 1 : 0,
+      JSON.stringify(cat.strengths),
+      JSON.stringify(cat.weaknesses),
+      JSON.stringify(cat.recommendations),
+      JSON.stringify(cat.feedback),
+      report.timestamp
+    );
+  }
+}
+
+function hydrateCategoryRows(rows: Array<Record<string, unknown>>): EvaluationCategoryResult[] {
+  return rows.map((r) => ({
+    key: String(r.category_key) as EvaluationCategoryKey,
+    label: String(r.category_label),
+    weightPct: Number(r.weight_pct),
+    score: Number(r.score),
+    weightedContribution: Number(r.weighted_contribution),
+    performanceLabel: String(r.performance_label) as PerformanceClassification,
+    applicable: Number(r.applicable) === 1,
+    strengths: JSON.parse(String(r.strengths_json)) as string[],
+    weaknesses: JSON.parse(String(r.weaknesses_json)) as string[],
+    recommendations: JSON.parse(String(r.recommendations_json)) as string[],
+    feedback: JSON.parse(String(r.feedback_json)) as ActionableCategoryFeedback,
+  }));
+}
+
+function hydrateEvaluationAttemptRow(
+  row: Record<string, unknown>,
+  categories: EvaluationCategoryResult[]
+): EvaluationAttemptRecord {
+  return {
+    id: String(row.id),
+    profileId: String(row.profile_id),
+    skillId: String(row.skill_id),
+    skillName: String(row.skill_name),
+    submissionType: (String(row.submission_type) === 'project_code' ? 'project_code' : 'assessment'),
+    submissionTitle: String(row.submission_title),
+    attemptNumber: Number(row.attempt_number),
+    overallScore: Number(row.overall_score),
+    performanceClassification: String(row.performance_classification) as PerformanceClassification,
+    evaluationStatus: String(row.evaluation_status) as EvaluationReport['evaluationStatus'],
+    quizScore: Number(row.quiz_score),
+    practicalScore: Number(row.practical_score),
+    combinedScore: Number(row.combined_score),
+    passed: Number(row.passed) === 1,
+    replanTriggered: Number(row.replan_triggered) === 1,
+    updatedSkillLevel: Number(row.updated_skill_level),
+    aiMode: String(row.ai_mode) as AIMode,
+    timestamp: String(row.created_at),
+    categories,
+    checksExecuted: JSON.parse(String(row.checks_executed_json || '[]')) as EvaluationCheckRecord[],
+    summaryNote: String(row.summary_note || ''),
+  };
+}
+
+export function getEvaluationAttemptsByProfileId(profileId: string): EvaluationAttemptRecord[] {
+  const db = getDb();
+  const attemptRows = db
+    .prepare(
+      'SELECT * FROM evaluation_attempts WHERE profile_id = ? ORDER BY attempt_number DESC, created_at DESC LIMIT 50'
+    )
+    .all(profileId) as Array<Record<string, unknown>>;
+
+  if (attemptRows.length === 0) return [];
+
+  const catRows = db
+    .prepare('SELECT * FROM evaluation_category_scores WHERE profile_id = ?')
+    .all(profileId) as Array<Record<string, unknown>>;
+
+  const catsByAttempt = new Map<string, Array<Record<string, unknown>>>();
+  for (const cr of catRows) {
+    const aid = String(cr.attempt_id);
+    const list = catsByAttempt.get(aid) ?? [];
+    list.push(cr);
+    catsByAttempt.set(aid, list);
+  }
+
+  return attemptRows.map((row) => {
+    const aid = String(row.id);
+    const categories = hydrateCategoryRows(catsByAttempt.get(aid) ?? []);
+    return hydrateEvaluationAttemptRow(row, categories);
+  });
+}
+
+export function getEvaluationAttemptById(attemptId: string): EvaluationAttemptRecord | null {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT * FROM evaluation_attempts WHERE id = ?')
+    .get(attemptId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+
+  const catRows = db
+    .prepare('SELECT * FROM evaluation_category_scores WHERE attempt_id = ?')
+    .all(attemptId) as Array<Record<string, unknown>>;
+
+  return hydrateEvaluationAttemptRow(row, hydrateCategoryRows(catRows));
+}
+
+export function getAllEvaluationAttempts(): EvaluationAttemptRecord[] {
+  const db = getDb();
+  const attemptRows = db
+    .prepare('SELECT * FROM evaluation_attempts ORDER BY created_at DESC LIMIT 500')
+    .all() as Array<Record<string, unknown>>;
+
+  if (attemptRows.length === 0) return [];
+
+  const catRows = db
+    .prepare('SELECT * FROM evaluation_category_scores')
+    .all() as Array<Record<string, unknown>>;
+
+  const catsByAttempt = new Map<string, Array<Record<string, unknown>>>();
+  for (const cr of catRows) {
+    const aid = String(cr.attempt_id);
+    const list = catsByAttempt.get(aid) ?? [];
+    list.push(cr);
+    catsByAttempt.set(aid, list);
+  }
+
+  return attemptRows.map((row) => {
+    const aid = String(row.id);
+    return hydrateEvaluationAttemptRow(row, hydrateCategoryRows(catsByAttempt.get(aid) ?? []));
+  });
+}
+
 export function getAssessmentHistoryByProfileId(profileId: string): AssessmentAttempt[] {
   const db = getDb();
+  const evalAttempts = getEvaluationAttemptsByProfileId(profileId);
+  const evalMap = new Map(evalAttempts.map((e) => [e.id, e]));
+
   const rows = db
     .prepare(
       'SELECT id, result_json, created_at FROM assessments WHERE profile_id = ? AND result_json IS NOT NULL ORDER BY created_at DESC LIMIT 30'
@@ -439,9 +697,33 @@ export function getAssessmentHistoryByProfileId(profileId: string): AssessmentAt
     .all(profileId) as Array<{ id: string; result_json: string; created_at: string }>;
 
   const history: AssessmentAttempt[] = [];
+  const seenIds = new Set<string>();
+
   for (const r of rows) {
     try {
       const parsed = JSON.parse(r.result_json) as AssessmentSubmitResponse;
+      const ev = evalMap.get(r.id);
+      const report: EvaluationReport | undefined = ev
+        ? {
+            attemptId: ev.id,
+            profileId: ev.profileId,
+            skillId: ev.skillId,
+            skillName: ev.skillName,
+            submissionType: ev.submissionType,
+            submissionTitle: ev.submissionTitle,
+            attemptNumber: ev.attemptNumber,
+            timestamp: ev.timestamp,
+            overallScore: ev.overallScore,
+            performanceClassification: ev.performanceClassification,
+            evaluationStatus: ev.evaluationStatus,
+            aiMode: ev.aiMode,
+            categories: ev.categories,
+            checksExecuted: ev.checksExecuted,
+            summaryNote: ev.summaryNote,
+          }
+        : parsed.evaluationReport;
+
+      seenIds.add(r.id);
       history.push({
         id: r.id,
         profileId: parsed.profileId,
@@ -454,12 +736,56 @@ export function getAssessmentHistoryByProfileId(profileId: string): AssessmentAt
         replanTriggered: parsed.replanTriggered,
         updatedSkillLevel: parsed.updatedSkillLevel,
         timestamp: r.created_at,
+        attemptNumber: ev?.attemptNumber ?? report?.attemptNumber,
+        overallScore: ev?.overallScore ?? report?.overallScore,
+        performanceClassification:
+          ev?.performanceClassification ?? report?.performanceClassification,
+        evaluationReport: report,
       });
     } catch {
       // skip malformed record
     }
   }
-  return history;
+
+  for (const ev of evalAttempts) {
+    if (!seenIds.has(ev.id)) {
+      history.push({
+        id: ev.id,
+        profileId: ev.profileId,
+        skillId: ev.skillId,
+        skillName: ev.skillName,
+        quizScore: ev.quizScore,
+        practicalScore: ev.practicalScore,
+        combinedScore: ev.combinedScore,
+        passed: ev.passed,
+        replanTriggered: ev.replanTriggered,
+        updatedSkillLevel: ev.updatedSkillLevel,
+        timestamp: ev.timestamp,
+        attemptNumber: ev.attemptNumber,
+        overallScore: ev.overallScore,
+        performanceClassification: ev.performanceClassification,
+        evaluationReport: {
+          attemptId: ev.id,
+          profileId: ev.profileId,
+          skillId: ev.skillId,
+          skillName: ev.skillName,
+          submissionType: ev.submissionType,
+          submissionTitle: ev.submissionTitle,
+          attemptNumber: ev.attemptNumber,
+          timestamp: ev.timestamp,
+          overallScore: ev.overallScore,
+          performanceClassification: ev.performanceClassification,
+          evaluationStatus: ev.evaluationStatus,
+          aiMode: ev.aiMode,
+          categories: ev.categories,
+          checksExecuted: ev.checksExecuted,
+          summaryNote: ev.summaryNote,
+        },
+      });
+    }
+  }
+
+  return history.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 30);
 }
 
 export function insertTraceEvent(event: AgentTraceEvent & { correlationId?: string }): void {

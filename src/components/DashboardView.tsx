@@ -27,13 +27,20 @@ import {
   Tooltip,
 } from 'recharts';
 import { formatINRLpa } from '../shared/currency';
-import type { CareerDomain, RoleId, SkillEvidenceSource, TwinSnapshot } from '../shared/types';
+import type {
+  CareerDomain,
+  EvaluationReport,
+  RoleId,
+  SkillEvidenceSource,
+  TwinSnapshot,
+} from '../shared/types';
 import { getChartPalette, useTheme } from '../theme';
 
 interface DashboardViewProps {
   twin: TwinSnapshot;
   domains: CareerDomain[];
   onStartAssessmentForSkill: (skillId: string) => void;
+  onInspectEvaluation?: (report: EvaluationReport) => void;
   onOpenRoadmap: () => void;
   onOpenMentor: () => void;
   onOpenOpportunities: () => void;
@@ -156,6 +163,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   twin,
   domains,
   onStartAssessmentForSkill,
+  onInspectEvaluation,
   onOpenRoadmap,
   onOpenMentor,
   onOpenOpportunities,
@@ -585,20 +593,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="divide-y divide-pp-border/70">
               {assessmentHistory.slice(0, 5).map((att) => (
                 <div key={att.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
-                  <div>
-                    <div className="font-semibold text-pp-text">{att.skillName}</div>
+                  <div className="min-w-0">
+                    <div className="font-semibold text-pp-text truncate">
+                      {att.attemptNumber ? `Attempt #${att.attemptNumber} · ` : ''}
+                      {att.evaluationReport?.submissionTitle ?? att.skillName}
+                    </div>
                     <div className="text-pp-text-muted">
                       {new Date(att.timestamp).toLocaleString()}
+                      {att.performanceClassification ? ` · ${att.performanceClassification}` : ''}
                       {att.replanTriggered ? ' · Remediation replan triggered' : ''}
                     </div>
                   </div>
-                  <span
-                    className={`font-mono font-bold tabular-nums ${
-                      att.passed ? 'text-pp-success' : 'text-pp-error'
-                    }`}
-                  >
-                    {att.combinedScore}% {att.passed ? 'PASS' : 'FAIL'}
-                  </span>
+                  <div className="flex items-center gap-2.5 shrink-0">
+                    <span
+                      className={`font-mono font-bold tabular-nums ${
+                        (att.overallScore ?? att.combinedScore) >= 50
+                          ? 'text-pp-success'
+                          : 'text-pp-error'
+                      }`}
+                    >
+                      {att.overallScore !== undefined
+                        ? `${att.overallScore}/100`
+                        : `${att.combinedScore}% ${att.passed ? 'PASS' : 'FAIL'}`}
+                    </span>
+                    {att.evaluationReport && onInspectEvaluation && (
+                      <button
+                        type="button"
+                        onClick={() => onInspectEvaluation(att.evaluationReport!)}
+                        className="px-2 py-1 text-[11px] font-semibold text-pp-accent hover:bg-pp-surface rounded border border-pp-border transition-colors cursor-pointer"
+                      >
+                        Breakdown
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

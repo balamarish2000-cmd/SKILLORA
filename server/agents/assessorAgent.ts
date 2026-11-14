@@ -57,6 +57,7 @@ export function evaluateProblemSubmission(params: {
   testResults: TestCaseExecutionResult[];
   practicalFeedback: string;
   stdout: string[];
+  executionMs: number;
 } {
   const {
     questions,
@@ -78,6 +79,7 @@ export function evaluateProblemSubmission(params: {
     questions.length > 0 ? Math.round((quizCorrect / questions.length) * 100) : 100;
 
   // 2. Evaluate either IT coding challenge OR domain practical calculation/scenario
+  const tExecStart = performance.now();
   const stdout: string[] = [];
   const testResults: TestCaseExecutionResult[] = [];
   let practicalScore = 0;
@@ -196,6 +198,8 @@ export function evaluateProblemSubmission(params: {
     practicalFeedback = 'Evaluated via conceptual diagnostic rubric.';
   }
 
+  const executionMs = Math.max(1, Math.round(performance.now() - tExecStart));
+
   const combinedScore =
     questions.length > 0
       ? Math.round(practicalScore * 0.7 + quizScore * 0.3)
@@ -209,5 +213,6 @@ export function evaluateProblemSubmission(params: {
     testResults,
     practicalFeedback,
     stdout: stdout.slice(0, 20),
+    executionMs,
   };
 }
