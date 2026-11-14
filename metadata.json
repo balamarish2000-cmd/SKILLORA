@@ -1,0 +1,6 @@
+{
+  "name": "SKILLORA",
+  "description": "Discover Your Potential. Build Your Future. Your AI-powered career companion to understand your skills, explore career paths, build personalized learning roadmaps and discover meaningful opportunities.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --pp-bg: #FFFFFF;
+  --pp-surface: #EFF6FF;
+  --pp-card: #FFFFFF;
+  --pp-elevated: #DBEAFE;
+  --pp-border: #E2E8F0;
+  --pp-accent: #2563EB;
+  --pp-accent-hover: #1D4ED8;
+  --pp-accent-fg: #FFFFFF;
+  --pp-accent-soft: #EFF6FF;
+  --pp-amber: #1D4ED8;
+  --pp-amber-soft: #DBEAFE;
+  --pp-text: #172B4D;
+  --pp-text-muted: #64748B;
+  --pp-success: #2563EB;
+  --pp-success-soft: #EFF6FF;
+  --pp-warning: #1D4ED8;
+  --pp-warning-soft: #DBEAFE;
+  --pp-error: #DC2626;
+  --pp-error-soft: #FEF2F2;
+}
+
+@theme inline {
+  --font-display: "Manrope", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-pp-bg: var(--pp-bg);
+  --color-pp-surface: var(--pp-surface);
+  --color-pp-card: var(--pp-card);
+  --color-pp-elevated: var(--pp-elevated);
+  --color-pp-border: var(--pp-border);
+  --color-pp-accent: var(--pp-accent);
+  --color-pp-accent-hover: var(--pp-accent-hover);
+  --color-pp-accent-fg: var(--pp-accent-fg);
+  --color-pp-accent-soft: var(--pp-accent-soft);
+  --color-pp-amber: var(--pp-amber);
+  --color-pp-amber-soft: var(--pp-amber-soft);
+  --color-pp-text: var(--pp-text);
+  --color-pp-text-muted: var(--pp-text-muted);
+  --color-pp-success: var(--pp-success);
+  --color-pp-success-soft: var(--pp-success-soft);
+  --color-pp-warning: var(--pp-warning);
+  --color-pp-warning-soft: var(--pp-warning-soft);
+  --color-pp-error: var(--pp-error);
+  --color-pp-error-soft: var(--pp-error-soft);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background-color: #FFFFFF;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #FFFFFF;
+    color: #172B4D;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  select option {
+    background-color: #FFFFFF;
+    color: #172B4D;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #172B4D !important;
+  }
+
+  aside,
+  header,
+  .no-print {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+  }
+
+  #skillora-resume-print-sheet {
+    border: none !important;
+    background: #ffffff !important;
+    color: #172B4D !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+
+  #skillora-resume-print-sheet * {
+    color: #172B4D !important;
+    border-color: #E2E8F0 !important;
+  }
+}
